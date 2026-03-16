@@ -924,6 +924,15 @@ with tabs[1]:
         )
         st.plotly_chart(fig_cumplimiento, use_container_width=True)
 
+        tabla_cumplimiento_mes = cumplimiento_mes.copy()
+        tabla_cumplimiento_mes["brecha"] = tabla_cumplimiento_mes["creados"] - tabla_cumplimiento_mes["cerrados"]
+        tabla_cumplimiento_mes["tasa_cierre_label"] = tabla_cumplimiento_mes["tasa_cierre"].map(lambda v: f"{v:.1f}%")
+        render_support_table(
+            tabla_cumplimiento_mes.sort_values("mes", ascending=False),
+            ["mes", "creados", "cerrados", "brecha", "tasa_cierre_label"],
+            "Cumplimiento por mes",
+        )
+
         creados_total_periodo = int(cumplimiento_mes["creados"].sum()) if not cumplimiento_mes.empty else 0
         cerrados_total_periodo = int(cumplimiento_mes["cerrados"].sum()) if not cumplimiento_mes.empty else 0
         tasa_global_cierre = (cerrados_total_periodo / creados_total_periodo * 100) if creados_total_periodo else 0
