@@ -36,6 +36,10 @@ FILTRO_KEYS = {
     "agente": "filtro_agente",
     "mes": "filtro_mes",
 }
+PENDING_KEYS = {
+    "departamento": "pending_departamento",
+    "agente": "pending_agente",
+}
 
 
 def encontrar_dataset_tickets() -> Path | None:
@@ -489,6 +493,18 @@ def asegurar_estado() -> None:
             st.session_state[key] = "Todos"
     if "vista_kpi" not in st.session_state:
         st.session_state["vista_kpi"] = "Todos"
+    for key in PENDING_KEYS.values():
+        if key not in st.session_state:
+            st.session_state[key] = None
+
+
+def aplicar_filtros_pendientes() -> None:
+    if st.session_state[PENDING_KEYS["departamento"]]:
+        st.session_state[FILTRO_KEYS["departamento"]] = st.session_state[PENDING_KEYS["departamento"]]
+        st.session_state[PENDING_KEYS["departamento"]] = None
+    if st.session_state[PENDING_KEYS["agente"]]:
+        st.session_state[FILTRO_KEYS["agente"]] = st.session_state[PENDING_KEYS["agente"]]
+        st.session_state[PENDING_KEYS["agente"]] = None
 
 
 def filtrar_tickets(
@@ -537,6 +553,7 @@ fondo_sidebar_uri = imagen_a_data_uri(BRANDING_ASSETS["fondo_sidebar"])
 fondo_hero_uri = imagen_a_data_uri(BRANDING_ASSETS["fondo_hero"])
 aplicar_estilos(logo_uri, fondo_app_uri, fondo_sidebar_uri, fondo_hero_uri)
 asegurar_estado()
+aplicar_filtros_pendientes()
 
 if tickets_df.empty:
     st.error("No se encontro un archivo CSV de tickets dentro de la carpeta datasets.")
@@ -633,6 +650,25 @@ serie_mes = (
     .rename(columns={"Número de Ticket": "tickets"})
     .sort_values("mes")
 )
+creados_mes = (
+    filtrado.groupby("mes", as_index=False)["Número de Ticket"]
+    .count()
+    .rename(columns={"Número de Ticket": "creados"})
+)
+cerrados_mes = (
+    filtrado[filtrado["Fecha de cierre"].notna()]
+    .assign(mes_cierre=lambda df: df["Fecha de cierre"].dt.to_period("M").astype(str))
+    .groupby("mes_cierre", as_index=False)["Número de Ticket"]
+    .count()
+    .rename(columns={"mes_cierre": "mes", "Número de Ticket": "cerrados"})
+)
+cumplimiento_mes = creados_mes.merge(cerrados_mes, on="mes", how="outer").fillna(0).sort_values("mes")
+cumplimiento_mes["creados"] = cumplimiento_mes["creados"].astype(int)
+cumplimiento_mes["cerrados"] = cumplimiento_mes["cerrados"].astype(int)
+cumplimiento_mes["tasa_cierre"] = (
+    (cumplimiento_mes["cerrados"] / cumplimiento_mes["creados"].replace(0, pd.NA)) * 100
+).fillna(0).round(1)
+
 serie_dia_semana = (
     analisis_df.assign(dia_semana=analisis_df["Fecha de creación"].dt.day_name())
     .groupby("dia_semana", as_index=False)["Número de Ticket"]
@@ -799,7 +835,7 @@ with tabs[0]:
         if evento_depto and evento_depto.selection and evento_depto.selection.get("points"):
             punto = evento_depto.selection["points"][0]
             if "x" in punto:
-                st.session_state[FILTRO_KEYS["departamento"]] = punto["x"]
+                st.session_state[PENDING_KEYS["departamento"]] = punto["x"]
                 st.rerun()
     with mid_row[1]:
         st.markdown('<div class="section-title">Tickets por agente</div><div class="section-note">Selecciona un agente para filtrar la vista completa.</div>', unsafe_allow_html=True)
@@ -817,7 +853,7 @@ with tabs[0]:
         if evento_agente and evento_agente.selection and evento_agente.selection.get("points"):
             punto = evento_agente.selection["points"][0]
             if "x" in punto:
-                st.session_state[FILTRO_KEYS["agente"]] = punto["x"]
+                st.session_state[PENDING_KEYS["agente"]] = punto["x"]
                 st.rerun()
 
     bottom_row = st.columns([1.05, 1])
@@ -840,31 +876,9 @@ with tabs[0]:
         estilizar_figura(fig_ctx_tema, height=360, showlegend=False)
         fig_ctx_tema.update_layout(coloraxis_showscale=False, yaxis={"categoryorder": "total ascending"})
         st.plotly_chart(fig_ctx_tema, use_container_width=True)
-    render_support_table(contexto_tema, ["Temas de ayuda", "tickets"], "Temas presentes en la vista actual")
-
-    detalle_contexto = analisis_df.copy().sort_values("Fecha de creación", ascending=False).head(20)
-    detalle_contexto["Fecha de creación"] = detalle_contexto["Fecha de creación"].dt.strftime("%Y-%m-%d %H:%M")
-    detalle_contexto["Última actualización"] = detalle_contexto["Última actualización"].dt.strftime("%Y-%m-%d %H:%M")
-    st.dataframe(
-        detalle_contexto[
-            [
-                "Número de Ticket",
-                "Fecha de creación",
-                "Asunto",
-                "Departamento",
-                "Temas de ayuda",
-                "Estado actual",
-                "Agente asignado",
-                "Atrasado",
-            ]
-        ],
-        use_container_width=True,
-        hide_index=True,
-    )
-
 with tabs[1]:
     st.markdown('<div class="section-title">Tendencias y estacionalidad</div><div class="section-note">Explora la evolucion temporal, picos de demanda y periodos con mayor carga de soporte.</div>', unsafe_allow_html=True)
-    trend_tabs = st.tabs(["Por mes", "Por dia", "Por estado"])
+    trend_tabs = st.tabs(["Por mes", "Por dia", "Por estado", "Cumplimiento"])
     with trend_tabs[0]:
         fig_mes = px.line(serie_mes, x="mes", y="tickets", markers=True)
         estilizar_figura(fig_mes, height=380, showlegend=False)
@@ -886,6 +900,70 @@ with tabs[1]:
         )
         estilizar_figura(fig_estado_mes, height=390, showlegend=True)
         st.plotly_chart(fig_estado_mes, use_container_width=True)
+    with trend_tabs[3]:
+        fig_cumplimiento = go.Figure()
+        fig_cumplimiento.add_bar(name="Creados", x=cumplimiento_mes["mes"], y=cumplimiento_mes["creados"], marker_color="#2563eb")
+        fig_cumplimiento.add_bar(name="Cerrados", x=cumplimiento_mes["mes"], y=cumplimiento_mes["cerrados"], marker_color="#0f766e")
+        fig_cumplimiento.add_trace(
+            go.Scatter(
+                name="Tasa de cierre %",
+                x=cumplimiento_mes["mes"],
+                y=cumplimiento_mes["tasa_cierre"],
+                yaxis="y2",
+                mode="lines+markers",
+                line=dict(color="#f97316", width=3),
+                marker=dict(size=8),
+            )
+        )
+        estilizar_figura(fig_cumplimiento, height=400, showlegend=True)
+        fig_cumplimiento.update_layout(
+            barmode="group",
+            legend_title_text="",
+            yaxis_title="Tickets",
+            yaxis2=dict(title="Tasa %", overlaying="y", side="right", showgrid=False, rangemode="tozero"),
+        )
+        st.plotly_chart(fig_cumplimiento, use_container_width=True)
+
+        creados_total_periodo = int(cumplimiento_mes["creados"].sum()) if not cumplimiento_mes.empty else 0
+        cerrados_total_periodo = int(cumplimiento_mes["cerrados"].sum()) if not cumplimiento_mes.empty else 0
+        tasa_global_cierre = (cerrados_total_periodo / creados_total_periodo * 100) if creados_total_periodo else 0
+        brecha_total = creados_total_periodo - cerrados_total_periodo
+        mejor_mes = (
+            cumplimiento_mes.sort_values(["tasa_cierre", "cerrados"], ascending=[False, False]).iloc[0]
+            if not cumplimiento_mes.empty
+            else None
+        )
+        peor_mes = (
+            cumplimiento_mes.sort_values(["tasa_cierre", "creados"], ascending=[True, False]).iloc[0]
+            if not cumplimiento_mes.empty
+            else None
+        )
+
+        resumen_cols = st.columns(4)
+        with resumen_cols[0]:
+            render_mini_card("Creados periodo", formato_entero(creados_total_periodo), "Total de tickets generados en los meses visibles")
+        with resumen_cols[1]:
+            render_mini_card("Cerrados periodo", formato_entero(cerrados_total_periodo), "Total de tickets cerrados en el mismo periodo")
+        with resumen_cols[2]:
+            render_mini_card("Tasa global", f"{tasa_global_cierre:.1f}%", "Relacion entre tickets cerrados y creados")
+        with resumen_cols[3]:
+            render_mini_card("Brecha neta", formato_entero(brecha_total), "Diferencia entre entradas y cierres")
+
+        if mejor_mes is not None and peor_mes is not None:
+            st.markdown(
+                f"""
+                <div class="section-block">
+                    <div class="section-title">Lectura del cumplimiento mensual</div>
+                    <div class="section-note">
+                        En el periodo filtrado se crearon <b>{formato_entero(creados_total_periodo)}</b> tickets y se cerraron <b>{formato_entero(cerrados_total_periodo)}</b>,
+                        lo que deja una tasa global de cierre de <b>{tasa_global_cierre:.1f}%</b> y una brecha neta de <b>{formato_entero(brecha_total)}</b> tickets.
+                        El mejor mes fue <b>{mejor_mes["mes"]}</b> con una tasa de <b>{mejor_mes["tasa_cierre"]:.1f}%</b>,
+                        mientras que el mes con menor cobertura fue <b>{peor_mes["mes"]}</b> con <b>{peor_mes["tasa_cierre"]:.1f}%</b>.
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
 with tabs[2]:
     cols = st.columns(4)
@@ -948,7 +1026,7 @@ with tabs[3]:
     with cols[2]:
         render_mini_card("Respuesta media", f"{(agentes_df['respuesta'].mean() * 100 if not agentes_df.empty else 0):.1f}%", "Promedio de tickets respondidos por agente")
 
-    people_tabs = st.tabs(["Agentes", "Solicitantes", "Matriz"])
+    people_tabs = st.tabs(["Agentes", "Solicitantes", "Balance"])
     with people_tabs[0]:
         st.markdown('<div class="section-title">Carga operativa por agente</div><div class="section-note">Volumen de tickets asignados para identificar concentracion de demanda.</div>', unsafe_allow_html=True)
         fig_agente = px.bar(
@@ -983,11 +1061,19 @@ with tabs[3]:
         fig_solicitante.update_layout(coloraxis_showscale=False)
         st.plotly_chart(fig_solicitante, use_container_width=True)
     with people_tabs[2]:
-        detalle_agentes = agentes_df.copy()
-        detalle_agentes["respuesta"] = (detalle_agentes["respuesta"] * 100).round(1).astype(str) + "%"
-        detalle_agentes["mttr"] = detalle_agentes["mttr"].apply(formato_horas)
-        st.markdown('<div class="section-title">Matriz de desempeno de agentes</div><div class="section-note">Vista comparativa para seguimiento operativo y distribucion de carga.</div>', unsafe_allow_html=True)
-        st.dataframe(detalle_agentes, use_container_width=True, hide_index=True)
+        st.markdown('<div class="section-title">Balance operativo de agentes</div><div class="section-note">Cruce entre tickets cerrados, abiertos y atrasados para detectar sobrecarga o baja resolucion.</div>', unsafe_allow_html=True)
+        fig_balance_scatter = px.scatter(
+            agentes_df.head(15),
+            x="cerrados",
+            y="abiertos",
+            size="tickets",
+            color="atrasados",
+            hover_name="Agente asignado",
+            color_continuous_scale="Oranges",
+        )
+        estilizar_figura(fig_balance_scatter, height=390, showlegend=False)
+        fig_balance_scatter.update_layout(coloraxis_colorbar_title="Atrasados")
+        st.plotly_chart(fig_balance_scatter, use_container_width=True)
 
 with tabs[4]:
     st.markdown('<div class="section-title">Exploracion profunda</div><div class="section-note">Analisis cruzado de departamentos, fuentes, prioridades, temas y observaciones del contexto actual.</div>', unsafe_allow_html=True)
@@ -1030,6 +1116,7 @@ with tabs[5]:
     with table_tabs[1]:
         estado_mes_df = analisis_df.groupby(["mes", "Estado actual"], as_index=False)["Número de Ticket"].count().rename(columns={"Número de Ticket": "tickets"})
         render_support_table(serie_mes.sort_values("mes", ascending=False), ["mes", "tickets"], "Tickets por mes")
+        render_support_table(cumplimiento_mes.sort_values("mes", ascending=False), ["mes", "creados", "cerrados", "tasa_cierre"], "Creados vs cerrados por mes")
         render_support_table(serie_dia_semana[["dia_semana", "tickets"]], ["dia_semana", "tickets"], "Tickets por dia")
         render_support_table(estado_mes_df.sort_values(["mes", "tickets"], ascending=[False, False]), ["mes", "Estado actual", "tickets"], "Tickets por mes y estado")
     with table_tabs[2]:
